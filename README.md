@@ -29,6 +29,13 @@ credential to a user-protected temporary file, uploads it into each isolated
 task container, and deletes both copies after the run. The token value is not
 placed in Pier's configuration or command line.
 
+Windows credential discovery accepts official Copilot CLI logins for any HTTPS
+host, including GitHub Enterprise Cloud data-residency hosts such as
+`servername.ghe.com`. The selected host is passed into the isolated agent as
+`COPILOT_GH_HOST`. If several Copilot CLI accounts are saved, set
+`COPILOT_GH_HOST` to select the intended host; otherwise `github.com` is
+preferred, followed by the first available Copilot credential.
+
 For mini-swe-agent, the runner queries GitHub's authenticated
 `/copilot_internal/user` metadata endpoint inside the task container and
 supplies LiteLLM with the returned account-specific Copilot inference endpoint.

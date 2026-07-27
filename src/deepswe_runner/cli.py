@@ -13,9 +13,11 @@ import subprocess
 import sys
 import tempfile
 from ctypes import wintypes
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Sequence
+from urllib.parse import urlparse
 
 BENCHMARK_URL = "https://github.com/datacurve-ai/deep-swe"
 DEFAULT_BENCHMARK_DIR = Path(".cache/deep-swe")
@@ -32,6 +34,12 @@ AGENT_IMPORTS = {
 
 class RunnerError(RuntimeError):
     """Expected user-facing runner failure."""
+
+
+@dataclass(frozen=True)
+class GitHubCredential:
+    token: str
+    host: str | None = None
 
 
 def _run_checked(command: Sequence[str], **kwargs) -> subprocess.CompletedProcess[str]:
@@ -144,13 +152,14 @@ def selected_count(args: argparse.Namespace, available: Sequence[str]) -> int:
     return len(candidates)
 
 
-def read_github_token() -> str:
+def read_github_credential() -> GitHubCredential:
+    configured_host = os.environ.get("COPILOT_GH_HOST") or os.environ.get("GH_HOST")
     for variable in ("COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"):
         if value := os.environ.get(variable):
-            return value.strip()
+            return GitHubCredential(value.strip(), configured_host)
     if os.name == "nt":
-        if value := _read_windows_copilot_token():
-            return value
+        if credential := _read_windows_copilot_credential(configured_host):
+            return credential
     if not shutil.which("gh"):
         raise RunnerError(
             "No GitHub credential found. Log in with `copilot login` or "
@@ -161,7 +170,12 @@ def read_github_token() -> str:
     token = result.stdout.strip()
     if not token:
         raise RunnerError("`gh auth token` returned an empty credential")
-    return token
+    return GitHubCredential(token, configured_host)
+
+
+def read_github_token() -> str:
+    """Backward-compatible token-only credential accessor."""
+    return read_github_credential().token
 
 
 def _decode_credential_blob(blob: bytes) -> str:
@@ -171,8 +185,23 @@ def _decode_credential_blob(blob: bytes) -> str:
     return blob.decode("utf-8").rstrip("\0").strip()
 
 
-def _read_windows_copilot_token() -> str | None:
-    """Read the official Copilot CLI OAuth token from Windows Credential Manager."""
+def _copilot_credential_host(target: str) -> str | None:
+    suffix = ".copilot-cli"
+    if not target.lower().endswith(suffix):
+        return None
+    service, separator, _account = target[: -len(suffix)].rpartition(":")
+    if not separator:
+        return None
+    parsed = urlparse(service)
+    if parsed.scheme != "https" or not parsed.hostname:
+        return None
+    return parsed.hostname
+
+
+def _read_windows_copilot_credential(
+    preferred_host: str | None = None,
+) -> GitHubCredential | None:
+    """Read any official Copilot CLI login from Windows Credential Manager."""
     if os.name != "nt":
         return None
 
@@ -211,14 +240,13 @@ def _read_windows_copilot_token() -> str | None:
             return None
         raise RunnerError(f"Unable to read Windows Credential Manager (error {error})")
 
+    matches: list[GitHubCredential] = []
     try:
         for index in range(count.value):
             credential = credentials[index].contents
             target = credential.TargetName or ""
-            if not (
-                target.lower().startswith("https://github.com:")
-                and target.lower().endswith(".copilot-cli")
-            ):
+            host = _copilot_credential_host(target)
+            if host is None:
                 continue
             blob = ctypes.string_at(
                 credential.CredentialBlob, credential.CredentialBlobSize
@@ -231,10 +259,26 @@ def _read_windows_copilot_token() -> str | None:
                     "has an unsupported format"
                 ) from exc
             if token:
-                return token
+                matches.append(GitHubCredential(token, host))
     finally:
         advapi32.CredFree(credentials)
-    return None
+    if preferred_host:
+        normalized_host = urlparse(
+            preferred_host if "://" in preferred_host else f"https://{preferred_host}"
+        ).hostname
+        for match in matches:
+            if match.host == normalized_host:
+                return match
+    for match in matches:
+        if match.host == "github.com":
+            return match
+    return matches[0] if matches else None
+
+
+def _read_windows_copilot_token() -> str | None:
+    """Backward-compatible token-only Windows credential accessor."""
+    credential = _read_windows_copilot_credential()
+    return credential.token if credential else None
 
 
 def write_temporary_credential(token: str) -> Path:
@@ -282,6 +326,8 @@ def build_pier_command(
         args.job_name,
         "--yes",
     ]
+    if github_host := getattr(args, "github_host", None):
+        command.extend(["--agent-kwarg", f"github_host={github_host}"])
     for model in models:
         command.extend(["--model", model])
     for task in args.task:
@@ -456,9 +502,10 @@ def _run_command(args: argparse.Namespace) -> int:
         print(redact_command(command, placeholder))
         return 0
 
-    token = read_github_token()
-    credential_file = write_temporary_credential(token)
-    del token
+    credential = read_github_credential()
+    credential_file = write_temporary_credential(credential.token)
+    args.github_host = credential.host
+    del credential
     try:
         command = build_pier_command(
             args,

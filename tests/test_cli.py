@@ -6,6 +6,7 @@ import pytest
 from deepswe_runner.cli import (
     RunnerError,
     _decode_credential_blob,
+    _copilot_credential_host,
     build_pier_command,
     normalize_model,
     pier_result_succeeded,
@@ -121,6 +122,29 @@ def test_windows_credential_blob_decodes_utf8():
 
 def test_windows_credential_blob_decodes_utf16():
     assert _decode_credential_blob("token-secret".encode("utf-16-le")) == "token-secret"
+
+
+@pytest.mark.parametrize(
+    ("target", "host"),
+    [
+        ("https://github.com:james.copilot-cli", "github.com"),
+        ("https://servername.ghe.com:james.copilot-cli", "servername.ghe.com"),
+        ("https://acme.ghe.com:person@example.com.copilot-cli", "acme.ghe.com"),
+        ("unrelated-credential", None),
+    ],
+)
+def test_copilot_credential_host_accepts_enterprise_targets(target, host):
+    assert _copilot_credential_host(target) == host
+
+
+def test_enterprise_host_is_passed_to_agent(monkeypatch, tmp_path):
+    monkeypatch.setattr("deepswe_runner.cli.shutil.which", lambda name: f"/bin/{name}")
+    command = build_pier_command(
+        args(github_host="servername.ghe.com"),
+        benchmark_dir=tmp_path,
+        credential_file=tmp_path / "credential",
+    )
+    assert "github_host=servername.ghe.com" in command
 
 
 def test_pier_result_detects_trial_errors(tmp_path):

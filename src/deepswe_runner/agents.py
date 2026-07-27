@@ -21,12 +21,22 @@ class _CredentialMixin:
     """Upload a host credential without placing its value in Pier's config or logs."""
 
     _credential_file: Path
+    _github_host: str | None
 
     def _set_credential_file(self, credential_file: str | Path) -> None:
         path = Path(credential_file).expanduser().resolve()
         if not path.is_file():
             raise ValueError(f"GitHub credential file does not exist: {path}")
         self._credential_file = path
+
+    def _set_github_host(self, github_host: str | None) -> None:
+        self._github_host = github_host.strip().lower() if github_host else None
+
+    def _copilot_domains(self) -> list[str]:
+        domains = list(_COPILOT_DOMAINS)
+        if self._github_host:
+            domains.extend([self._github_host, f"api.{self._github_host}"])
+        return list(dict.fromkeys(domains))
 
     async def _upload_credential(self, environment: BaseEnvironment) -> None:
         # Pier's Docker upload uses `docker compose cp`. On Docker Desktop for
@@ -48,11 +58,13 @@ class CopilotCliAgent(_CredentialMixin, BaseInstalledAgent):
         self,
         *args,
         credential_file: str | Path,
+        github_host: str | None = None,
         max_ai_credits: int | None = None,
         reasoning_effort: str | None = None,
         **kwargs,
     ) -> None:
         self._set_credential_file(credential_file)
+        self._set_github_host(github_host)
         if max_ai_credits is not None and max_ai_credits <= 0:
             raise ValueError("max_ai_credits must be greater than zero")
         self._max_ai_credits = max_ai_credits
@@ -127,7 +139,7 @@ class CopilotCliAgent(_CredentialMixin, BaseInstalledAgent):
         )
 
     def network_allowlist(self) -> NetworkAllowlist:
-        return NetworkAllowlist(domains=_COPILOT_DOMAINS)
+        return NetworkAllowlist(domains=self._copilot_domains())
 
     def populate_context_post_run(self, context: AgentContext) -> None:
         # Copilot's text transcript is retained in /logs/agent. Pier still records
@@ -168,6 +180,12 @@ class CopilotCliAgent(_CredentialMixin, BaseInstalledAgent):
             "set -euo pipefail; "
             f'trap "rm -f {shlex.quote(_REMOTE_TOKEN_PATH)}" EXIT; '
             f'export COPILOT_GITHUB_TOKEN="$(cat {shlex.quote(_REMOTE_TOKEN_PATH)})"; '
+            + (
+                f"export COPILOT_GH_HOST={shlex.quote(self._github_host)}; "
+                if self._github_host
+                else ""
+            )
+            +
             f"copilot {' '.join(flags)} 2>&1 | tee /logs/agent/copilot-cli.txt"
         )
         await self.exec_as_agent(environment, command=command)
@@ -176,8 +194,15 @@ class CopilotCliAgent(_CredentialMixin, BaseInstalledAgent):
 class CopilotMiniSweAgent(_CredentialMixin, MiniSweAgent):
     """Run mini-swe-agent with LiteLLM's official GitHub Copilot provider."""
 
-    def __init__(self, *args, credential_file: str | Path, **kwargs) -> None:
+    def __init__(
+        self,
+        *args,
+        credential_file: str | Path,
+        github_host: str | None = None,
+        **kwargs,
+    ) -> None:
         self._set_credential_file(credential_file)
+        self._set_github_host(github_host)
         extra_env = dict(kwargs.pop("extra_env", {}) or {})
         # Pier 0.3.0 asks for a generic API-key variable before launching mini,
         # although LiteLLM's github_copilot provider authenticates from its token dir.
@@ -190,7 +215,7 @@ class CopilotMiniSweAgent(_CredentialMixin, MiniSweAgent):
         return "copilot-mini-swe-agent"
 
     def network_allowlist(self) -> NetworkAllowlist:
-        return NetworkAllowlist(domains=_COPILOT_DOMAINS)
+        return NetworkAllowlist(domains=self._copilot_domains())
 
     async def run(
         self,
@@ -213,7 +238,7 @@ class CopilotMiniSweAgent(_CredentialMixin, MiniSweAgent):
                 "import urllib.request\n"
                 f"token = open({str(_REMOTE_TOKEN_PATH)!r}, encoding='utf-8').read().strip()\n"
                 "request = urllib.request.Request(\n"
-                "    'https://api.github.com/copilot_internal/user',\n"
+                f"    {'https://api.' + (self._github_host or 'github.com') + '/copilot_internal/user'!r},\n"
                 "    headers={'Authorization': f'Bearer {token}', 'Accept': 'application/json'},\n"
                 ")\n"
                 "with urllib.request.urlopen(request, timeout=20) as response:\n"

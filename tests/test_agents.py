@@ -21,6 +21,17 @@ def test_copilot_cli_agent_strips_provider_prefix(tmp_path):
     assert ".githubcopilot.com" in agent.network_allowlist().domains
 
 
+def test_enterprise_host_is_allowed_and_configured(tmp_path):
+    agent = CopilotCliAgent(
+        logs_dir=tmp_path,
+        model_name="github_copilot/gpt-5-mini",
+        credential_file=credential(tmp_path),
+        github_host="servername.ghe.com",
+    )
+    assert "servername.ghe.com" in agent.network_allowlist().domains
+    assert "api.servername.ghe.com" in agent.network_allowlist().domains
+
+
 def test_mini_agent_configures_litellm_auth(tmp_path):
     agent = CopilotMiniSweAgent(
         logs_dir=tmp_path,
