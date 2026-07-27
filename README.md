@@ -91,6 +91,10 @@ responses may not include a price, in which case LiteLLM records token usage
 but cannot enforce the dollar limit. Use one task and concurrency `1` for an
 initial smoke test.
 
+Runs are uncapped by default. `--max-ai-credits` is passed to the selected
+harness only when you specify it. Copilot CLI requires any explicit cap to be
+at least `30`.
+
 ## Models and subsets
 
 Pass `--model` more than once to compare models:
@@ -170,7 +174,7 @@ Docker Desktop must be running in Linux-container mode.
 --n-tasks N
 --sample-seed N
 --all                         explicit full-corpus opt-in
---max-ai-credits N            per trial; default 50 (Copilot CLI minimum: 30)
+--max-ai-credits N            optional per trial; unlimited when omitted
 --reasoning-effort LEVEL
 --concurrency N               default 1
 --job-name NAME

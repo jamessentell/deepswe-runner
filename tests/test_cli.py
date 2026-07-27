@@ -92,6 +92,19 @@ def test_mini_command_uses_dollar_limit(monkeypatch, tmp_path):
     assert "--agent-kwarg cost_limit=0.3" in joined
 
 
+@pytest.mark.parametrize("agent", ["copilot-cli", "mini-swe-agent"])
+def test_command_omits_credit_limit_by_default(monkeypatch, tmp_path, agent):
+    monkeypatch.setattr("deepswe_runner.cli.shutil.which", lambda name: f"/bin/{name}")
+    command = build_pier_command(
+        args(agent=agent, max_ai_credits=None),
+        benchmark_dir=tmp_path,
+        credential_file=tmp_path / "credential",
+    )
+    joined = " ".join(command)
+    assert "max_ai_credits=" not in joined
+    assert "cost_limit=" not in joined
+
+
 def test_command_output_redacts_credential_path():
     credential_file = Path("/tmp/deepswe-copilot-secret")
     rendered = redact_command(

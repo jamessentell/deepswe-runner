@@ -293,7 +293,8 @@ def build_pier_command(
 
     if args.agent == "copilot-cli":
         command.extend(["--agent-kwarg", f"version={args.copilot_version}"])
-        command.extend(["--agent-kwarg", f"max_ai_credits={args.max_ai_credits}"])
+        if args.max_ai_credits is not None:
+            command.extend(["--agent-kwarg", f"max_ai_credits={args.max_ai_credits}"])
         if args.reasoning_effort:
             command.extend(
                 ["--agent-kwarg", f"reasoning_effort={args.reasoning_effort}"]
@@ -301,9 +302,10 @@ def build_pier_command(
     else:
         # mini-swe-agent tracks dollars; one AI credit is $0.01. This is a
         # best-effort counterpart to Copilot CLI's server-enforced session limit.
-        command.extend(
-            ["--agent-kwarg", f"cost_limit={args.max_ai_credits / 100:g}"]
-        )
+        if args.max_ai_credits is not None:
+            command.extend(
+                ["--agent-kwarg", f"cost_limit={args.max_ai_credits / 100:g}"]
+            )
         if args.reasoning_effort:
             command.extend(
                 ["--agent-kwarg", f"reasoning_effort={args.reasoning_effort}"]
@@ -387,9 +389,9 @@ def create_parser() -> argparse.ArgumentParser:
     run_parser.add_argument(
         "--max-ai-credits",
         type=int,
-        default=50,
+        default=None,
         metavar="N",
-        help="Per-trial Copilot credit cap; mini-swe equivalent is best-effort (default: 50)",
+        help="Optional per-trial Copilot credit cap; unlimited when omitted",
     )
     run_parser.add_argument(
         "--reasoning-effort",
@@ -424,9 +426,13 @@ def _run_command(args: argparse.Namespace) -> int:
     validate_selection(args, available)
     if not args.model:
         args.model = [DEFAULT_MODEL]
-    if args.max_ai_credits < 1:
+    if args.max_ai_credits is not None and args.max_ai_credits < 1:
         raise RunnerError("--max-ai-credits must be at least 1")
-    if args.agent == "copilot-cli" and args.max_ai_credits < MIN_COPILOT_CLI_CREDITS:
+    if (
+        args.agent == "copilot-cli"
+        and args.max_ai_credits is not None
+        and args.max_ai_credits < MIN_COPILOT_CLI_CREDITS
+    ):
         raise RunnerError(
             f"Copilot CLI requires --max-ai-credits to be at least "
             f"{MIN_COPILOT_CLI_CREDITS}"

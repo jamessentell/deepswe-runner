@@ -48,12 +48,12 @@ class CopilotCliAgent(_CredentialMixin, BaseInstalledAgent):
         self,
         *args,
         credential_file: str | Path,
-        max_ai_credits: int = 50,
+        max_ai_credits: int | None = None,
         reasoning_effort: str | None = None,
         **kwargs,
     ) -> None:
         self._set_credential_file(credential_file)
-        if max_ai_credits <= 0:
+        if max_ai_credits is not None and max_ai_credits <= 0:
             raise ValueError("max_ai_credits must be greater than zero")
         self._max_ai_credits = max_ai_credits
         self._reasoning_effort = reasoning_effort
@@ -155,11 +155,12 @@ class CopilotCliAgent(_CredentialMixin, BaseInstalledAgent):
             "--no-color",
             "--no-remote-export",
             "--secret-env-vars=COPILOT_GITHUB_TOKEN",
-            f"--max-ai-credits={self._max_ai_credits}",
             f"--model={shlex.quote(model)}",
             "--share=/logs/agent/copilot-transcript.md",
             f"--prompt={shlex.quote(instruction)}",
         ]
+        if self._max_ai_credits is not None:
+            flags.insert(-3, f"--max-ai-credits={self._max_ai_credits}")
         if self._reasoning_effort:
             flags.insert(-2, f"--reasoning-effort={shlex.quote(self._reasoning_effort)}")
 
