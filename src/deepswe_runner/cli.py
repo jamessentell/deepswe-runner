@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
+import json
 import os
 import shlex
 import shutil
@@ -10,6 +12,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+from ctypes import wintypes
 from datetime import datetime
 from pathlib import Path
 from typing import Sequence
@@ -18,7 +21,8 @@ BENCHMARK_URL = "https://github.com/datacurve-ai/deep-swe"
 DEFAULT_BENCHMARK_DIR = Path(".cache/deep-swe")
 DEFAULT_JOBS_DIR = Path("jobs")
 DEFAULT_MODEL = "gpt-5-mini"
-DEFAULT_COPILOT_VERSION = "1.0.73"
+DEFAULT_COPILOT_VERSION = "1.0.75"
+MIN_COPILOT_CLI_CREDITS = 30
 
 AGENT_IMPORTS = {
     "copilot-cli": "deepswe_runner.agents:CopilotCliAgent",
@@ -44,13 +48,60 @@ def ensure_benchmark(path: Path, *, update: bool = False) -> Path:
     if not path.exists():
         path.parent.mkdir(parents=True, exist_ok=True)
         print(f"Cloning DeepSWE Bench into {path}")
-        _run_checked(["git", "clone", "--depth", "1", BENCHMARK_URL, str(path)])
+        _run_checked(
+            [
+                "git",
+                "-c",
+                "core.autocrlf=false",
+                "clone",
+                "--depth",
+                "1",
+                BENCHMARK_URL,
+                str(path),
+            ]
+        )
     if not (path / ".git").is_dir() or not (path / "tasks" / "dataset.toml").is_file():
         raise RunnerError(f"Not a DeepSWE checkout: {path}")
     if update:
         print(f"Updating DeepSWE Bench in {path}")
         _run_checked(["git", "-C", str(path), "pull", "--ff-only"])
+    if os.name == "nt":
+        _ensure_benchmark_lf_checkout(path)
     return path
+
+
+def _ensure_benchmark_lf_checkout(path: Path) -> None:
+    """Keep Linux container scripts byte-for-byte LF on Windows hosts."""
+    eol_output = _run_checked(
+        ["git", "-C", str(path), "ls-files", "--eol"],
+        capture_output=True,
+    ).stdout
+    crlf_paths = [
+        path / line.split("\t", 1)[1]
+        for line in eol_output.splitlines()
+        if "w/crlf" in line and "\t" in line
+    ]
+    if not crlf_paths:
+        return
+    unstaged = subprocess.run(["git", "-C", str(path), "diff", "--quiet"]).returncode
+    staged = subprocess.run(
+        ["git", "-C", str(path), "diff", "--cached", "--quiet"]
+    ).returncode
+    untracked = _run_checked(
+        ["git", "-C", str(path), "ls-files", "--others", "--exclude-standard"],
+        capture_output=True,
+    ).stdout.strip()
+    if unstaged or staged or untracked:
+        raise RunnerError(
+            f"DeepSWE checkout contains CRLF scripts and local changes: {path}. "
+            "Commit/stash the changes or use a fresh --benchmark-dir."
+        )
+    print("Repairing DeepSWE checkout line endings for Linux containers")
+    _run_checked(["git", "-C", str(path), "config", "core.autocrlf", "false"])
+    for tracked_file in crlf_paths:
+        contents = tracked_file.read_bytes()
+        if b"\r\n" in contents:
+            tracked_file.write_bytes(contents.replace(b"\r\n", b"\n"))
 
 
 def task_names(benchmark_dir: Path) -> list[str]:
@@ -97,16 +148,93 @@ def read_github_token() -> str:
     for variable in ("COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"):
         if value := os.environ.get(variable):
             return value.strip()
+    if os.name == "nt":
+        if value := _read_windows_copilot_token():
+            return value
     if not shutil.which("gh"):
         raise RunnerError(
-            "No GitHub credential found. Log in with `gh auth login` or set "
-            "COPILOT_GITHUB_TOKEN to a supported fine-grained/OAuth token."
+            "No GitHub credential found. Log in with `copilot login` or "
+            "`gh auth login`, or set COPILOT_GITHUB_TOKEN to a supported "
+            "fine-grained/OAuth token."
         )
     result = _run_checked(["gh", "auth", "token"], capture_output=True)
     token = result.stdout.strip()
     if not token:
         raise RunnerError("`gh auth token` returned an empty credential")
     return token
+
+
+def _decode_credential_blob(blob: bytes) -> str:
+    """Decode a generic Windows credential without logging its contents."""
+    if len(blob) > 1 and blob[1::2].count(0) >= len(blob[1::2]) * 3 // 4:
+        return blob.decode("utf-16-le").rstrip("\0").strip()
+    return blob.decode("utf-8").rstrip("\0").strip()
+
+
+def _read_windows_copilot_token() -> str | None:
+    """Read the official Copilot CLI OAuth token from Windows Credential Manager."""
+    if os.name != "nt":
+        return None
+
+    class CREDENTIAL(ctypes.Structure):
+        _fields_ = [
+            ("Flags", wintypes.DWORD),
+            ("Type", wintypes.DWORD),
+            ("TargetName", wintypes.LPWSTR),
+            ("Comment", wintypes.LPWSTR),
+            ("LastWritten", wintypes.FILETIME),
+            ("CredentialBlobSize", wintypes.DWORD),
+            ("CredentialBlob", ctypes.POINTER(ctypes.c_ubyte)),
+            ("Persist", wintypes.DWORD),
+            ("AttributeCount", wintypes.DWORD),
+            ("Attributes", ctypes.c_void_p),
+            ("TargetAlias", wintypes.LPWSTR),
+            ("UserName", wintypes.LPWSTR),
+        ]
+
+    credential_pointer = ctypes.POINTER(CREDENTIAL)
+    count = wintypes.DWORD()
+    credentials = ctypes.POINTER(credential_pointer)()
+    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+    advapi32.CredEnumerateW.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.DWORD),
+        ctypes.POINTER(ctypes.POINTER(credential_pointer)),
+    ]
+    advapi32.CredEnumerateW.restype = wintypes.BOOL
+    advapi32.CredFree.argtypes = [ctypes.c_void_p]
+
+    if not advapi32.CredEnumerateW(None, 0, ctypes.byref(count), ctypes.byref(credentials)):
+        error = ctypes.get_last_error()
+        if error == 1168:  # ERROR_NOT_FOUND
+            return None
+        raise RunnerError(f"Unable to read Windows Credential Manager (error {error})")
+
+    try:
+        for index in range(count.value):
+            credential = credentials[index].contents
+            target = credential.TargetName or ""
+            if not (
+                target.lower().startswith("https://github.com:")
+                and target.lower().endswith(".copilot-cli")
+            ):
+                continue
+            blob = ctypes.string_at(
+                credential.CredentialBlob, credential.CredentialBlobSize
+            )
+            try:
+                token = _decode_credential_blob(blob)
+            except UnicodeDecodeError as exc:
+                raise RunnerError(
+                    "The Copilot CLI credential in Windows Credential Manager "
+                    "has an unsupported format"
+                ) from exc
+            if token:
+                return token
+    finally:
+        advapi32.CredFree(credentials)
+    return None
 
 
 def write_temporary_credential(token: str) -> Path:
@@ -196,6 +324,22 @@ def redact_command(command: Sequence[str], credential_file: Path) -> str:
     )
 
 
+def pier_result_succeeded(result_path: Path) -> bool:
+    if not result_path.is_file():
+        return False
+    try:
+        result = json.loads(result_path.read_text(encoding="utf-8"))
+        stats = result["stats"]
+        return (
+            result.get("finished_at") is not None
+            and stats.get("n_completed_trials") == result.get("n_total_trials")
+            and stats.get("n_errored_trials") == 0
+            and stats.get("n_cancelled_trials") == 0
+        )
+    except (OSError, json.JSONDecodeError, KeyError, TypeError):
+        return False
+
+
 def create_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="deepswe",
@@ -282,6 +426,11 @@ def _run_command(args: argparse.Namespace) -> int:
         args.model = [DEFAULT_MODEL]
     if args.max_ai_credits < 1:
         raise RunnerError("--max-ai-credits must be at least 1")
+    if args.agent == "copilot-cli" and args.max_ai_credits < MIN_COPILOT_CLI_CREDITS:
+        raise RunnerError(
+            f"Copilot CLI requires --max-ai-credits to be at least "
+            f"{MIN_COPILOT_CLI_CREDITS}"
+        )
     if args.concurrency < 1:
         raise RunnerError("--concurrency must be at least 1")
     if args.job_name is None:
@@ -294,7 +443,7 @@ def _run_command(args: argparse.Namespace) -> int:
         f"× {len(args.model)} model(s), agent={args.agent}, concurrency={args.concurrency}"
     )
     if args.dry_run:
-        placeholder = Path("/tmp/deepswe-copilot-credential")
+        placeholder = Path(tempfile.gettempdir()) / "deepswe-copilot-credential"
         command = build_pier_command(
             args, benchmark_dir=benchmark_dir, credential_file=placeholder
         )
@@ -311,7 +460,17 @@ def _run_command(args: argparse.Namespace) -> int:
             credential_file=credential_file,
         )
         print(f"Running: {redact_command(command, credential_file)}")
-        return subprocess.run(command, text=True).returncode
+        return_code = subprocess.run(command, text=True).returncode
+        if return_code:
+            return return_code
+        result_path = args.jobs_dir.expanduser().resolve() / args.job_name / "result.json"
+        if not pier_result_succeeded(result_path):
+            print(
+                f"Pier finished but one or more trials failed; inspect {result_path}",
+                file=sys.stderr,
+            )
+            return 1
+        return 0
     finally:
         credential_file.unlink(missing_ok=True)
 

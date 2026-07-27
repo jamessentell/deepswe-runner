@@ -6,6 +6,9 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "datacurve-pier==0.3.0",
+    # LiteLLM 1.93+ currently publishes no Windows wheel and requires a full
+    # Rust/MSVC toolchain to build. 1.91 includes the GitHub Copilot provider.
+    "litellm>=1.91.3,<1.92",
 ]
 
 [project.scripts]

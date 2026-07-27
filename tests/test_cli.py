@@ -5,10 +5,13 @@ import pytest
 
 from deepswe_runner.cli import (
     RunnerError,
+    _decode_credential_blob,
     build_pier_command,
     normalize_model,
+    pier_result_succeeded,
     redact_command,
     selected_count,
+    _run_command,
     validate_selection,
 )
 
@@ -23,13 +26,16 @@ def args(**overrides):
         "all_tasks": False,
         "concurrency": 1,
         "jobs_dir": Path("jobs"),
+        "benchmark_dir": Path(".cache/deep-swe"),
+        "update_benchmark": False,
         "job_name": "test",
-        "copilot_version": "1.0.73",
+        "copilot_version": "1.0.75",
         "max_ai_credits": 30,
         "reasoning_effort": None,
         "keep_containers": False,
         "debug": False,
         "pier_arg": [],
+        "dry_run": False,
     }
     values.update(overrides)
     return Namespace(**values)
@@ -94,3 +100,39 @@ def test_command_output_redacts_credential_path():
     )
     assert str(credential_file) not in rendered
     assert "credential_file=<temporary-credential>" in rendered
+
+
+def test_windows_credential_blob_decodes_utf8():
+    assert _decode_credential_blob(b"token-secret") == "token-secret"
+
+
+def test_windows_credential_blob_decodes_utf16():
+    assert _decode_credential_blob("token-secret".encode("utf-16-le")) == "token-secret"
+
+
+def test_pier_result_detects_trial_errors(tmp_path):
+    result_path = tmp_path / "result.json"
+    result_path.write_text(
+        '{"finished_at":"now","n_total_trials":1,"stats":'
+        '{"n_completed_trials":1,"n_errored_trials":1,"n_cancelled_trials":0}}',
+        encoding="utf-8",
+    )
+    assert not pier_result_succeeded(result_path)
+
+
+def test_pier_result_accepts_clean_completion(tmp_path):
+    result_path = tmp_path / "result.json"
+    result_path.write_text(
+        '{"finished_at":"now","n_total_trials":1,"stats":'
+        '{"n_completed_trials":1,"n_errored_trials":0,"n_cancelled_trials":0}}',
+        encoding="utf-8",
+    )
+    assert pier_result_succeeded(result_path)
+
+
+def test_direct_cli_rejects_credit_cap_below_upstream_minimum(monkeypatch, tmp_path):
+    run_args = args(max_ai_credits=29, benchmark_dir=tmp_path, dry_run=True)
+    monkeypatch.setattr("deepswe_runner.cli.ensure_benchmark", lambda *a, **k: tmp_path)
+    monkeypatch.setattr("deepswe_runner.cli.task_names", lambda path: ["task-a"])
+    with pytest.raises(RunnerError, match="at least 30"):
+        _run_command(run_args)

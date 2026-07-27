@@ -14,17 +14,42 @@ jobs are written to `jobs/`. Neither is committed to this repository.
 
 ## Requirements
 
-- Linux, Python 3.12+, `uv`, Git, and a running Docker daemon.
+- Windows 10/11 or Linux, Python 3.12+, `uv`, Git, and a running Docker daemon.
+- On Windows, Docker Desktop configured with its WSL 2 Linux-container engine.
 - GitHub CLI (`gh`) authenticated to an account with Copilot access, or a
-  supported token in `COPILOT_GITHUB_TOKEN`.
+  supported token in `COPILOT_GITHUB_TOKEN`. On Windows, an authenticated
+  official Copilot CLI installation is also detected automatically.
 - Enough disk for the benchmark images. DeepSWE tasks request up to 20 GB of
   container storage.
 
-The runner reads a credential from `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`,
-`GITHUB_TOKEN`, or `gh auth token` (in that order). It writes the credential to
-a mode-`0600` temporary file, uploads it into each isolated task container, and
-deletes both copies after the run. The token value is not placed in Pier's
-configuration or command line.
+The runner reads a credential from `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, or
+`GITHUB_TOKEN` (in that order), then the official Copilot CLI's Windows
+Credential Manager entry on Windows, and finally `gh auth token`. It writes the
+credential to a user-protected temporary file, uploads it into each isolated
+task container, and deletes both copies after the run. The token value is not
+placed in Pier's configuration or command line.
+
+For mini-swe-agent, the runner queries GitHub's authenticated
+`/copilot_internal/user` metadata endpoint inside the task container and
+supplies LiteLLM with the returned account-specific Copilot inference endpoint.
+This supports the OAuth token created by current official Copilot CLI releases;
+the credential and generated LiteLLM cache are deleted after the trial.
+
+Use `./run-deepswe` on Linux. On Windows, the policy-free launcher works from
+PowerShell or Command Prompt:
+
+```powershell
+.\run-deepswe.cmd list-tasks
+```
+
+`run-deepswe.ps1` is also provided for PowerShell environments that permit
+local scripts.
+
+The benchmark checkout is created with `core.autocrlf=false` on every platform.
+This is required on Windows because its scripts and patch fixtures are consumed
+inside Linux containers. If an older clean checkout contains tracked CRLF
+files, the runner repairs those text files automatically; it refuses to
+overwrite a checkout with real local changes.
 
 ## Quick start
 
@@ -54,14 +79,17 @@ Run the same model through mini-swe-agent:
 ```bash
 ./run-deepswe run \
   --agent mini-swe-agent \
-  --model gpt-5-mini \
+  --model gpt-4o-mini \
   --task abs-stepped-slices \
   --max-ai-credits 30
 ```
 
 For mini-swe-agent, the credit limit is converted to its dollar cost limit
 (`30` credits = `$0.30`). That limit is best-effort because it depends on
-LiteLLM receiving and pricing Copilot's usage metadata.
+LiteLLM receiving and pricing Copilot's usage metadata. Current Copilot
+responses may not include a price, in which case LiteLLM records token usage
+but cannot enforce the dollar limit. Use one task and concurrency `1` for an
+initial smoke test.
 
 ## Models and subsets
 
@@ -107,9 +135,31 @@ model use:
 ./run-deepswe run --agent copilot-cli --model gpt-5-mini --all
 ```
 
-Use a model string accepted by the Copilot client, such as `gpt-5-mini`,
-`gpt-5.3-codex`, or `claude-sonnet-4.6`. The optional
-`github_copilot/` prefix is accepted but not required.
+The direct Copilot CLI harness accepts Copilot CLI model names such as
+`gpt-5-mini`, `gpt-5.3-codex`, or `claude-sonnet-4.6`. mini-swe-agent uses
+Copilot's OpenAI-compatible endpoint through LiteLLM, whose model catalog can
+be smaller; `gpt-4o-mini` is a conservative smoke-test choice. An unsupported
+model fails before meaningful agent work. The optional `github_copilot/`
+prefix is accepted but not required.
+
+## Windows quick start
+
+After installing Python/`uv`, Git, Docker Desktop, and Copilot CLI, open a new
+PowerShell or Command Prompt so newly installed commands are on `PATH`.
+Authenticate once with `copilot login`, then:
+
+```powershell
+docker version
+copilot --version
+.\run-deepswe.cmd list-tasks
+.\run-deepswe.cmd run --agent copilot-cli --model gpt-5-mini `
+  --task abs-stepped-slices --max-ai-credits 30 --dry-run
+.\run-deepswe.cmd run --agent mini-swe-agent --model gpt-4o-mini `
+  --task abs-stepped-slices --max-ai-credits 30 --dry-run
+```
+
+Remove `--dry-run` from one command at a time to execute the smoke trial.
+Docker Desktop must be running in Linux-container mode.
 
 ## Useful options
 
@@ -120,7 +170,7 @@ Use a model string accepted by the Copilot client, such as `gpt-5-mini`,
 --n-tasks N
 --sample-seed N
 --all                         explicit full-corpus opt-in
---max-ai-credits N            per trial; default 50
+--max-ai-credits N            per trial; default 50 (Copilot CLI minimum: 30)
 --reasoning-effort LEVEL
 --concurrency N               default 1
 --job-name NAME

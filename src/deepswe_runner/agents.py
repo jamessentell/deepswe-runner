@@ -12,7 +12,7 @@ from pier.models.agent.context import AgentContext
 from pier.models.agent.install import AgentInstallSpec, InstallStep
 from pier.models.agent.network import NetworkAllowlist
 
-_REMOTE_TOKEN_PATH = "/tmp/deepswe-copilot-auth/token"
+_REMOTE_TOKEN_PATH = "/tmp/deepswe-copilot-token"
 _LITELLM_TOKEN_DIR = "/tmp/deepswe-copilot-auth/litellm"
 _COPILOT_DOMAINS = ["github.com", "api.github.com", ".githubcopilot.com"]
 
@@ -29,10 +29,9 @@ class _CredentialMixin:
         self._credential_file = path
 
     async def _upload_credential(self, environment: BaseEnvironment) -> None:
-        await environment.exec(
-            command=f"mkdir -p {shlex.quote(str(Path(_REMOTE_TOKEN_PATH).parent))}",
-            user="root",
-        )
+        # Pier's Docker upload uses `docker compose cp`. On Docker Desktop for
+        # Windows, copying to a newly-created nested directory can race with
+        # Pier's container lifecycle. /tmp is guaranteed to exist.
         await environment.upload_file(self._credential_file, _REMOTE_TOKEN_PATH)
         await environment.exec(
             command=f"chmod 600 {shlex.quote(_REMOTE_TOKEN_PATH)}",
@@ -206,7 +205,28 @@ class CopilotMiniSweAgent(_CredentialMixin, MiniSweAgent):
                 f"cp {shlex.quote(_REMOTE_TOKEN_PATH)} "
                 f"{shlex.quote(_LITELLM_TOKEN_DIR + '/access-token')}; "
                 f"chmod 700 {shlex.quote(_LITELLM_TOKEN_DIR)}; "
-                f"chmod 600 {shlex.quote(_LITELLM_TOKEN_DIR + '/access-token')}"
+                f"chmod 600 {shlex.quote(_LITELLM_TOKEN_DIR + '/access-token')}; "
+                "python3 - <<'PY'\n"
+                "import json\n"
+                "import time\n"
+                "import urllib.request\n"
+                f"token = open({str(_REMOTE_TOKEN_PATH)!r}, encoding='utf-8').read().strip()\n"
+                "request = urllib.request.Request(\n"
+                "    'https://api.github.com/copilot_internal/user',\n"
+                "    headers={'Authorization': f'Bearer {token}', 'Accept': 'application/json'},\n"
+                ")\n"
+                "with urllib.request.urlopen(request, timeout=20) as response:\n"
+                "    user = json.load(response)\n"
+                "endpoint = user.get('endpoints', {}).get('api')\n"
+                "if not endpoint:\n"
+                "    raise RuntimeError('Copilot user response did not include an API endpoint')\n"
+                "cache = {'token': token, 'expires_at': time.time() + 3600,\n"
+                "         'endpoints': {'api': endpoint}}\n"
+                f"with open({str(_LITELLM_TOKEN_DIR + '/api-key.json')!r}, 'w', "
+                "encoding='utf-8') as handle:\n"
+                "    json.dump(cache, handle)\n"
+                "PY\n"
+                f"chmod 600 {shlex.quote(_LITELLM_TOKEN_DIR + '/api-key.json')}"
             ),
         )
         try:
