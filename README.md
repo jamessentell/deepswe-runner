@@ -215,6 +215,11 @@ trajectory. Inspect a completed job with Pier's viewer:
 uv run pier view jobs/<job-name>
 ```
 
+After every non-dry run, the runner prints the total `AI Credits` reported by
+Copilot CLI across the job's trials. If some trials or the selected harness do
+not expose credit usage (notably mini-swe-agent through LiteLLM), the terminal
+labels the value as unavailable or incomplete rather than treating it as zero.
+
 ## Development checks
 
 ```bash

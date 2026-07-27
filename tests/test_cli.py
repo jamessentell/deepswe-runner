@@ -1,4 +1,5 @@
 from argparse import Namespace
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -8,9 +9,11 @@ from deepswe_runner.cli import (
     _decode_credential_blob,
     _copilot_credential_host,
     build_pier_command,
+    ai_credits_consumed,
     normalize_model,
     pier_result_succeeded,
     redact_command,
+    report_ai_credits,
     selected_count,
     _run_command,
     validate_selection,
@@ -173,3 +176,39 @@ def test_direct_cli_rejects_credit_cap_below_upstream_minimum(monkeypatch, tmp_p
     monkeypatch.setattr("deepswe_runner.cli.task_names", lambda path: ["task-a"])
     with pytest.raises(RunnerError, match="at least 30"):
         _run_command(run_args)
+
+
+def test_ai_credits_are_aggregated_across_trials(tmp_path):
+    for name, credits in (("trial-a", "13.4"), ("trial-b", "2.75")):
+        agent_dir = tmp_path / name / "agent"
+        agent_dir.mkdir(parents=True)
+        (agent_dir / "copilot-cli.txt").write_text(
+            f"Changes  +1 -1\nAI Credits {credits} (1m 2s)\n",
+            encoding="utf-8",
+        )
+    total, reports, trials = ai_credits_consumed(tmp_path)
+    assert total == Decimal("16.15")
+    assert reports == 2
+    assert trials == 2
+
+
+def test_credit_report_marks_partial_totals(tmp_path, capsys):
+    (tmp_path / "trial-a" / "agent").mkdir(parents=True)
+    (tmp_path / "trial-a" / "agent" / "copilot-cli.txt").write_text(
+        "AI Credits 4.5 (30s)\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "trial-b").mkdir()
+    report_ai_credits(tmp_path)
+    assert capsys.readouterr().out.strip() == (
+        "AI credits consumed: 4.5 "
+        "(reported by 1 of 2 trials; total may be incomplete)"
+    )
+
+
+def test_credit_report_is_explicit_when_unavailable(tmp_path, capsys):
+    (tmp_path / "mini-trial").mkdir()
+    report_ai_credits(tmp_path)
+    assert capsys.readouterr().out.strip() == (
+        "AI credits consumed: unavailable (the agent did not report credit usage)"
+    )

@@ -6,6 +6,7 @@ import argparse
 import ctypes
 import json
 import os
+import re
 import shlex
 import shutil
 import stat
@@ -15,6 +16,7 @@ import tempfile
 from ctypes import wintypes
 from dataclasses import dataclass
 from datetime import datetime
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Sequence
 from urllib.parse import urlparse
@@ -25,6 +27,7 @@ DEFAULT_JOBS_DIR = Path("jobs")
 DEFAULT_MODEL = "gpt-5-mini"
 DEFAULT_COPILOT_VERSION = "1.0.75"
 MIN_COPILOT_CLI_CREDITS = 30
+AI_CREDITS_PATTERN = re.compile(r"(?m)^\s*AI Credits\s+([0-9]+(?:\.[0-9]+)?)\b")
 
 AGENT_IMPORTS = {
     "copilot-cli": "deepswe_runner.agents:CopilotCliAgent",
@@ -388,6 +391,41 @@ def pier_result_succeeded(result_path: Path) -> bool:
         return False
 
 
+def ai_credits_consumed(job_dir: Path) -> tuple[Decimal | None, int, int]:
+    """Return reported credits, report count, and discovered trial count."""
+    trial_dirs = (
+        [child for child in job_dir.iterdir() if child.is_dir()]
+        if job_dir.is_dir()
+        else []
+    )
+    values: list[Decimal] = []
+    for trial_dir in trial_dirs:
+        log_path = trial_dir / "agent" / "copilot-cli.txt"
+        if not log_path.is_file():
+            continue
+        try:
+            matches = AI_CREDITS_PATTERN.findall(
+                log_path.read_text(encoding="utf-8", errors="replace")
+            )
+            if matches:
+                values.append(Decimal(matches[-1]))
+        except (OSError, InvalidOperation):
+            continue
+    return (sum(values, Decimal(0)) if values else None, len(values), len(trial_dirs))
+
+
+def report_ai_credits(job_dir: Path) -> None:
+    credits, reports, trials = ai_credits_consumed(job_dir)
+    if credits is None:
+        print("AI credits consumed: unavailable (the agent did not report credit usage)")
+        return
+    rendered = format(credits, "f").rstrip("0").rstrip(".") or "0"
+    suffix = ""
+    if reports < trials:
+        suffix = f" (reported by {reports} of {trials} trials; total may be incomplete)"
+    print(f"AI credits consumed: {rendered}{suffix}")
+
+
 def create_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="deepswe",
@@ -514,9 +552,11 @@ def _run_command(args: argparse.Namespace) -> int:
         )
         print(f"Running: {redact_command(command, credential_file)}")
         return_code = subprocess.run(command, text=True).returncode
+        job_dir = args.jobs_dir.expanduser().resolve() / args.job_name
+        report_ai_credits(job_dir)
         if return_code:
             return return_code
-        result_path = args.jobs_dir.expanduser().resolve() / args.job_name / "result.json"
+        result_path = job_dir / "result.json"
         if not pier_result_succeeded(result_path):
             print(
                 f"Pier finished but one or more trials failed; inspect {result_path}",
