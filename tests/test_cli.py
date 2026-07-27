@@ -11,6 +11,7 @@ from deepswe_runner.cli import (
     build_pier_command,
     ai_credits_consumed,
     normalize_model,
+    normalize_opencode_model,
     pier_result_succeeded,
     redact_command,
     report_ai_credits,
@@ -96,6 +97,27 @@ def test_mini_command_uses_dollar_limit(monkeypatch, tmp_path):
     assert "--agent-kwarg cost_limit=0.3" in joined
 
 
+def test_opencode_command_uses_native_agent_without_copilot_options(monkeypatch, tmp_path):
+    monkeypatch.setattr("deepswe_runner.cli.shutil.which", lambda name: f"/bin/{name}")
+    command = build_pier_command(
+        args(
+            agent="opencode",
+            model=["qwen3-coder", "ollama/deepseek-r1"],
+            reasoning_effort="high",
+        ),
+        benchmark_dir=tmp_path,
+        credential_file=None,
+    )
+    joined = " ".join(command)
+    assert "--agent opencode" in joined
+    assert "--model openai/qwen3-coder" in joined
+    assert "--model ollama/deepseek-r1" in joined
+    assert "credential_file=" not in joined
+    assert "max_ai_credits=" not in joined
+    assert "cost_limit=" not in joined
+    assert "reasoning_effort=" not in joined
+
+
 @pytest.mark.parametrize("agent", ["copilot-cli", "mini-swe-agent"])
 def test_command_omits_credit_limit_by_default(monkeypatch, tmp_path, agent):
     monkeypatch.setattr("deepswe_runner.cli.shutil.which", lambda name: f"/bin/{name}")
@@ -107,6 +129,11 @@ def test_command_omits_credit_limit_by_default(monkeypatch, tmp_path, agent):
     joined = " ".join(command)
     assert "max_ai_credits=" not in joined
     assert "cost_limit=" not in joined
+
+
+def test_opencode_model_uses_provider_model_scheme():
+    assert normalize_opencode_model("qwen3-coder") == "openai/qwen3-coder"
+    assert normalize_opencode_model("ollama/qwen3-coder") == "ollama/qwen3-coder"
 
 
 def test_command_output_redacts_credential_path():

@@ -3,11 +3,13 @@
 Run [DeepSWE Bench](https://deepswe.datacurve.ai/run) against models included
 with a GitHub Copilot account. The runner uses
 [Pier](https://github.com/datacurve-ai/pier) for the benchmark sandbox and
-verifier, and offers two agent harnesses:
+verifier, and offers three agent harnesses:
 
 - `copilot-cli`: the official GitHub Copilot CLI runs as the coding agent.
 - `mini-swe-agent`: mini-swe-agent runs the agent loop and calls the selected
   Copilot model through LiteLLM's `github_copilot` provider.
+- `opencode`: Pier's native OpenCode harness runs any OpenCode
+  `provider/model`, including local OpenAI-compatible inference servers.
 
 The DeepSWE checkout is cloned automatically into `.cache/deep-swe`; benchmark
 jobs are written to `jobs/`. Neither is committed to this repository.
@@ -102,6 +104,32 @@ Runs are uncapped by default. `--max-ai-credits` is passed to the selected
 harness only when you specify it. Copilot CLI requires any explicit cap to be
 at least `30`.
 
+Run OpenCode with an explicit provider/model:
+
+```bash
+./run-deepswe run \
+  --agent opencode \
+  --model anthropic/claude-sonnet-4-6 \
+  --task abs-stepped-slices
+```
+
+For an OpenAI-compatible local server, an unqualified model defaults to the
+`openai` provider. From Windows, use Docker's `host.docker.internal` address
+because OpenCode runs inside the Linux task container:
+
+```powershell
+$env:OPENAI_BASE_URL = "http://host.docker.internal:11434/v1"
+$env:OPENAI_API_KEY = "local"
+.\run-deepswe.cmd run --agent opencode --model qwen3-coder `
+  --task abs-stepped-slices
+```
+
+You can also specify the provider explicitly, for example
+`--model ollama/qwen3-coder`. OpenCode reads the standard environment variables
+for the selected provider. It does not read or upload Copilot credentials.
+`--max-ai-credits` and `--reasoning-effort` are Copilot-harness options and are
+not passed to OpenCode.
+
 ## Models and subsets
 
 Pass `--model` more than once to compare models:
@@ -167,6 +195,8 @@ copilot --version
   --task abs-stepped-slices --max-ai-credits 30 --dry-run
 .\run-deepswe.cmd run --agent mini-swe-agent --model gpt-4o-mini `
   --task abs-stepped-slices --max-ai-credits 30 --dry-run
+.\run-deepswe.cmd run --agent opencode --model openai/qwen3-coder `
+  --task abs-stepped-slices --dry-run
 ```
 
 Remove `--dry-run` from one command at a time to execute the smoke trial.
@@ -175,7 +205,7 @@ Docker Desktop must be running in Linux-container mode.
 ## Useful options
 
 ```text
---agent {copilot-cli,mini-swe-agent}
+--agent {copilot-cli,mini-swe-agent,opencode}
 --model MODEL                 repeatable
 --task TASK_ID                repeatable
 --n-tasks N

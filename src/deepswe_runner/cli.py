@@ -1,4 +1,4 @@
-"""Command-line entry point for running DeepSWE with Copilot-backed agents."""
+"""Command-line entry point for running DeepSWE with supported agent harnesses."""
 
 from __future__ import annotations
 
@@ -33,6 +33,7 @@ AGENT_IMPORTS = {
     "copilot-cli": "deepswe_runner.agents:CopilotCliAgent",
     "mini-swe-agent": "deepswe_runner.agents:CopilotMiniSweAgent",
 }
+NATIVE_AGENTS = {"opencode"}
 
 
 class RunnerError(RuntimeError):
@@ -129,6 +130,13 @@ def normalize_model(model: str) -> str:
     if not value:
         raise RunnerError("Model names cannot be empty")
     return value if value.startswith("github_copilot/") else f"github_copilot/{value}"
+
+
+def normalize_opencode_model(model: str) -> str:
+    value = model.strip()
+    if not value:
+        raise RunnerError("Model names cannot be empty")
+    return value if "/" in value else f"openai/{value}"
 
 
 def validate_selection(args: argparse.Namespace, available: Sequence[str]) -> None:
@@ -305,31 +313,47 @@ def build_pier_command(
     args: argparse.Namespace,
     *,
     benchmark_dir: Path,
-    credential_file: Path,
+    credential_file: Path | None,
 ) -> list[str]:
     pier = shutil.which("pier")
     if not pier:
         raise RunnerError("Pier is unavailable. Run this script through `uv run`.")
 
-    models = [normalize_model(model) for model in args.model]
+    models = [
+        normalize_opencode_model(model) if args.agent == "opencode" else normalize_model(model)
+        for model in args.model
+    ]
     command = [
         pier,
         "run",
         "--path",
         str(benchmark_dir / "tasks"),
-        "--agent-import-path",
-        AGENT_IMPORTS[args.agent],
-        "--agent-kwarg",
-        f"credential_file={credential_file}",
-        "--n-concurrent",
-        str(args.concurrency),
-        "--jobs-dir",
-        str(args.jobs_dir.expanduser().resolve()),
-        "--job-name",
-        args.job_name,
-        "--yes",
     ]
-    if github_host := getattr(args, "github_host", None):
+    if args.agent in NATIVE_AGENTS:
+        command.extend(["--agent", args.agent])
+    else:
+        if credential_file is None:
+            raise RunnerError(f"{args.agent} requires a GitHub credential")
+        command.extend(
+            [
+                "--agent-import-path",
+                AGENT_IMPORTS[args.agent],
+                "--agent-kwarg",
+                f"credential_file={credential_file}",
+            ]
+        )
+    command.extend(
+        [
+            "--n-concurrent",
+            str(args.concurrency),
+            "--jobs-dir",
+            str(args.jobs_dir.expanduser().resolve()),
+            "--job-name",
+            args.job_name,
+            "--yes",
+        ]
+    )
+    if args.agent != "opencode" and (github_host := getattr(args, "github_host", None)):
         command.extend(["--agent-kwarg", f"github_host={github_host}"])
     for model in models:
         command.extend(["--model", model])
@@ -348,7 +372,7 @@ def build_pier_command(
             command.extend(
                 ["--agent-kwarg", f"reasoning_effort={args.reasoning_effort}"]
             )
-    else:
+    elif args.agent == "mini-swe-agent":
         # mini-swe-agent tracks dollars; one AI credit is $0.01. This is a
         # best-effort counterpart to Copilot CLI's server-enforced session limit.
         if args.max_ai_credits is not None:
@@ -429,7 +453,7 @@ def report_ai_credits(job_dir: Path) -> None:
 def create_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="deepswe",
-        description="Run DeepSWE Bench with GitHub Copilot models through Pier.",
+        description="Run DeepSWE Bench with Copilot or OpenCode through Pier.",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -440,7 +464,7 @@ def create_parser() -> argparse.ArgumentParser:
     run_parser = subparsers.add_parser("run", help="Run a benchmark subset")
     run_parser.add_argument(
         "--agent",
-        choices=sorted(AGENT_IMPORTS),
+        choices=sorted(set(AGENT_IMPORTS) | NATIVE_AGENTS),
         default="copilot-cli",
         help="Agent harness to use (default: copilot-cli)",
     )
@@ -449,7 +473,7 @@ def create_parser() -> argparse.ArgumentParser:
         action="append",
         default=[],
         metavar="MODEL",
-        help=f"Copilot model; repeat to compare models (default: {DEFAULT_MODEL})",
+        help=f"Model; repeat to compare models (default: {DEFAULT_MODEL})",
     )
     selection = run_parser.add_argument_group("task selection")
     selection.add_argument("--task", action="append", default=[], metavar="TASK_ID")
@@ -533,24 +557,31 @@ def _run_command(args: argparse.Namespace) -> int:
         f"× {len(args.model)} model(s), agent={args.agent}, concurrency={args.concurrency}"
     )
     if args.dry_run:
-        placeholder = Path(tempfile.gettempdir()) / "deepswe-copilot-credential"
-        command = build_pier_command(
-            args, benchmark_dir=benchmark_dir, credential_file=placeholder
+        placeholder = (
+            None
+            if args.agent == "opencode"
+            else Path(tempfile.gettempdir()) / "deepswe-copilot-credential"
         )
-        print(redact_command(command, placeholder))
+        command = build_pier_command(args, benchmark_dir=benchmark_dir, credential_file=placeholder)
+        print(redact_command(command, placeholder) if placeholder else shlex.join(command))
         return 0
 
-    credential = read_github_credential()
-    credential_file = write_temporary_credential(credential.token)
-    args.github_host = credential.host
-    del credential
+    credential_file = None
+    if args.agent != "opencode":
+        credential = read_github_credential()
+        credential_file = write_temporary_credential(credential.token)
+        args.github_host = credential.host
+        del credential
     try:
         command = build_pier_command(
             args,
             benchmark_dir=benchmark_dir,
             credential_file=credential_file,
         )
-        print(f"Running: {redact_command(command, credential_file)}")
+        rendered = (
+            redact_command(command, credential_file) if credential_file else shlex.join(command)
+        )
+        print(f"Running: {rendered}")
         return_code = subprocess.run(command, text=True).returncode
         job_dir = args.jobs_dir.expanduser().resolve() / args.job_name
         report_ai_credits(job_dir)
@@ -565,7 +596,8 @@ def _run_command(args: argparse.Namespace) -> int:
             return 1
         return 0
     finally:
-        credential_file.unlink(missing_ok=True)
+        if credential_file:
+            credential_file.unlink(missing_ok=True)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
