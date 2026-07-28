@@ -30,6 +30,7 @@ def args(**overrides):
         "sample_seed": 0,
         "all_tasks": False,
         "concurrency": 1,
+        "docker_build_retries": 2,
         "jobs_dir": Path("jobs"),
         "benchmark_dir": Path(".cache/deep-swe"),
         "update_benchmark": False,
@@ -83,6 +84,11 @@ def test_direct_command_has_models_subset_and_credit_limit(monkeypatch, tmp_path
     assert "--include-task-name task-a" in joined
     assert "--agent-kwarg max_ai_credits=30" in joined
     assert "--n-concurrent 1" in joined
+    assert (
+        "--environment-import-path "
+        "deepswe_runner.environments:RetryingDockerEnvironment"
+    ) in joined
+    assert "--environment-kwarg build_retries=2" in joined
 
 
 def test_mini_command_uses_dollar_limit(monkeypatch, tmp_path):

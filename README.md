@@ -214,6 +214,7 @@ Docker Desktop must be running in Linux-container mode.
 --max-ai-credits N            optional per trial; unlimited when omitted
 --reasoning-effort LEVEL
 --concurrency N               default 1
+--docker-build-retries N      failed pre-agent builds; default 2
 --job-name NAME
 --jobs-dir PATH
 --benchmark-dir PATH
@@ -225,6 +226,12 @@ Docker Desktop must be running in Linux-container mode.
 
 Run `./run-deepswe run --help` for the complete CLI help. Concurrency defaults
 to one to keep both resource and credit usage predictable.
+
+Docker image builds are retried twice by default. These retries occur entirely
+before the agent starts, so transient registry, Git, or package-index failures
+cannot cause duplicate model calls or additional AI-credit use. Set
+`--docker-build-retries 0` to disable them or choose a larger value on an
+unreliable network.
 
 ## Results
 

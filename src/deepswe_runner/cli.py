@@ -34,6 +34,7 @@ AGENT_IMPORTS = {
     "mini-swe-agent": "deepswe_runner.agents:CopilotMiniSweAgent",
 }
 NATIVE_AGENTS = {"opencode"}
+ENVIRONMENT_IMPORT = "deepswe_runner.environments:RetryingDockerEnvironment"
 
 
 class RunnerError(RuntimeError):
@@ -328,6 +329,10 @@ def build_pier_command(
         "run",
         "--path",
         str(benchmark_dir / "tasks"),
+        "--environment-import-path",
+        ENVIRONMENT_IMPORT,
+        "--environment-kwarg",
+        f"build_retries={args.docker_build_retries}",
     ]
     if args.agent in NATIVE_AGENTS:
         command.extend(["--agent", args.agent])
@@ -511,6 +516,13 @@ def create_parser() -> argparse.ArgumentParser:
         help=f"Copilot CLI npm version for direct mode (default: {DEFAULT_COPILOT_VERSION})",
     )
     run_parser.add_argument("--concurrency", type=int, default=1)
+    run_parser.add_argument(
+        "--docker-build-retries",
+        type=int,
+        default=2,
+        metavar="N",
+        help="Retry failed Docker image builds N times before agent execution (default: 2)",
+    )
     run_parser.add_argument("--keep-containers", action="store_true")
     run_parser.add_argument("--debug", action="store_true")
     run_parser.add_argument(
@@ -547,6 +559,8 @@ def _run_command(args: argparse.Namespace) -> int:
         )
     if args.concurrency < 1:
         raise RunnerError("--concurrency must be at least 1")
+    if args.docker_build_retries < 0:
+        raise RunnerError("--docker-build-retries cannot be negative")
     if args.job_name is None:
         stamp = datetime.now().strftime("%Y-%m-%d__%H-%M-%S")
         args.job_name = f"{args.agent}__{stamp}"
