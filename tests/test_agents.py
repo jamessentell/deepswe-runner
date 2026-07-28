@@ -21,6 +21,18 @@ def test_copilot_cli_agent_strips_provider_prefix(tmp_path):
     assert ".githubcopilot.com" in agent.network_allowlist().domains
 
 
+def test_copilot_cli_install_disables_inherited_nodesource_apt_repo(tmp_path):
+    agent = CopilotCliAgent(
+        logs_dir=tmp_path,
+        model_name="github_copilot/gpt-5-mini",
+        credential_file=credential(tmp_path),
+    )
+    root_install = agent.install_spec().steps[0].run
+    assert "grep -qF deb.nodesource.com" in root_install
+    assert 'mv "$source" "$source.disabled"' in root_install
+    assert root_install.index("deb.nodesource.com") < root_install.index("apt-get update")
+
+
 def test_enterprise_host_is_allowed_and_configured(tmp_path):
     agent = CopilotCliAgent(
         logs_dir=tmp_path,
