@@ -233,6 +233,27 @@ cannot cause duplicate model calls or additional AI-credit use. Set
 `--docker-build-retries 0` to disable them or choose a larger value on an
 unreliable network.
 
+## Resuming a full benchmark
+
+Give a full run an explicit job name:
+
+```powershell
+.\run-deepswe.cmd run --agent copilot-cli --model gpt-5.3-codex `
+  --reasoning-effort xhigh --all --concurrency 1 `
+  --job-name full-gpt-5.3-codex-xhigh
+```
+
+If the process or computer stops before the benchmark finishes, rerun that
+exact command. Pier retains completed trials in the named job, removes an
+incomplete scratch trial, and runs only the remaining task/model pairs. The
+job's `result.json` combines completed results and aggregate metrics.
+
+The runner uses a stable per-job path for its short-lived Copilot credential so
+the credential filename does not invalidate Pier's configuration comparison
+during a resume. The credential contents are rewritten with user-only
+permissions for each invocation and the file is deleted when that invocation
+ends.
+
 ## Results
 
 Pier writes each job beneath `jobs/<job-name>/`. Its `result.json`,

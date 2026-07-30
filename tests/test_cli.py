@@ -1,6 +1,7 @@
 from argparse import Namespace
 from decimal import Decimal
 from pathlib import Path
+import tempfile
 
 import pytest
 
@@ -10,6 +11,7 @@ from deepswe_runner.cli import (
     _copilot_credential_host,
     build_pier_command,
     ai_credits_consumed,
+    job_credential_path,
     normalize_model,
     normalize_opencode_model,
     pier_result_succeeded,
@@ -18,6 +20,7 @@ from deepswe_runner.cli import (
     selected_count,
     _run_command,
     validate_selection,
+    write_job_credential,
 )
 
 
@@ -150,6 +153,30 @@ def test_command_output_redacts_credential_path():
     )
     assert str(credential_file) not in rendered
     assert "credential_file=<temporary-credential>" in rendered
+
+
+def test_job_credential_path_is_stable_and_job_specific(tmp_path):
+    first = job_credential_path(tmp_path / "jobs", "full-bench")
+    resumed = job_credential_path(tmp_path / "jobs", "full-bench")
+    other_job = job_credential_path(tmp_path / "jobs", "other-bench")
+
+    assert first == resumed
+    assert first != other_job
+    assert first.parent == Path(tempfile.gettempdir())
+
+
+def test_job_credential_is_rewritten_at_the_same_path(tmp_path):
+    path = write_job_credential("first-token", tmp_path / "jobs", "full-bench")
+    try:
+        resumed_path = write_job_credential(
+            "replacement-token",
+            tmp_path / "jobs",
+            "full-bench",
+        )
+        assert resumed_path == path
+        assert path.read_text(encoding="utf-8") == "replacement-token"
+    finally:
+        path.unlink(missing_ok=True)
 
 
 def test_windows_credential_blob_decodes_utf8():

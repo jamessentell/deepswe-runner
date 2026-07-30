@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import ctypes
+import hashlib
 import json
 import os
 import re
@@ -310,6 +311,31 @@ def write_temporary_credential(token: str) -> Path:
     return path
 
 
+def job_credential_path(jobs_dir: Path, job_name: str) -> Path:
+    """Return a stable, user-scoped credential path for a resumable Pier job."""
+    job_identity = f"{jobs_dir.expanduser().resolve()}\0{job_name}".encode()
+    digest = hashlib.sha256(job_identity).hexdigest()[:24]
+    return Path(tempfile.gettempdir()) / f"deepswe-copilot-{digest}"
+
+
+def write_job_credential(token: str, jobs_dir: Path, job_name: str) -> Path:
+    path = job_credential_path(jobs_dir, job_name)
+    descriptor = os.open(
+        path,
+        os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
+        stat.S_IRUSR | stat.S_IWUSR,
+    )
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(token)
+            handle.flush()
+    except BaseException:
+        path.unlink(missing_ok=True)
+        raise
+    path.chmod(stat.S_IRUSR | stat.S_IWUSR)
+    return path
+
+
 def build_pier_command(
     args: argparse.Namespace,
     *,
@@ -583,7 +609,11 @@ def _run_command(args: argparse.Namespace) -> int:
     credential_file = None
     if args.agent != "opencode":
         credential = read_github_credential()
-        credential_file = write_temporary_credential(credential.token)
+        credential_file = write_job_credential(
+            credential.token,
+            args.jobs_dir,
+            args.job_name,
+        )
         args.github_host = credential.host
         del credential
     try:
