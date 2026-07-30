@@ -166,6 +166,21 @@ workflow:
 Every model/task pair is one trial. For example, two models and three selected
 tasks create six trials.
 
+For deterministic manual pagination across machines, select an inclusive,
+zero-based range from the alphabetical output of `list-tasks`:
+
+```cmd
+run-deepswe.cmd run --agent copilot-cli --model gpt-5.3-codex ^
+  --reasoning-effort xhigh --n-ordered-tasks-start 0 ^
+  --n-ordered-tasks-end 5 --concurrency 1 --job-name shard-0-through-5
+```
+
+The next machine can use start `6` and end `10`. The bounds are inclusive, so
+`0` through `5` selects six tasks. The runner expands the range into explicit
+alphabetically ordered task IDs before calling Pier. Ordered bounds cannot be
+combined with `--task`, `--n-tasks`, or `--all`. Keep every machine on the same
+runner and DeepSWE benchmark commits so the indexed task list is identical.
+
 The runner refuses to launch the entire benchmark unless you explicitly pass
 `--all`. This makes an accidental invocation fail before authentication or
 model use:
@@ -209,6 +224,8 @@ Docker Desktop must be running in Linux-container mode.
 --model MODEL                 repeatable
 --task TASK_ID                repeatable
 --n-tasks N
+--n-ordered-tasks-start INDEX  inclusive alphabetical index
+--n-ordered-tasks-end INDEX    inclusive alphabetical index
 --sample-seed N
 --all                         explicit full-corpus opt-in
 --max-ai-credits N            optional per trial; unlimited when omitted

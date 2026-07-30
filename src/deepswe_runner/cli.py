@@ -142,18 +142,60 @@ def normalize_opencode_model(model: str) -> str:
 
 
 def validate_selection(args: argparse.Namespace, available: Sequence[str]) -> None:
+    ordered_start = getattr(args, "n_ordered_tasks_start", None)
+    ordered_end = getattr(args, "n_ordered_tasks_end", None)
+    has_ordered_range = ordered_start is not None or ordered_end is not None
+    if (ordered_start is None) != (ordered_end is None):
+        raise RunnerError(
+            "--n-ordered-tasks-start and --n-ordered-tasks-end must be used together"
+        )
+    if has_ordered_range and (args.all_tasks or args.task or args.n_tasks is not None):
+        raise RunnerError(
+            "Ordered task bounds cannot be combined with --task, --n-tasks, or --all"
+        )
     if args.all_tasks and (args.task or args.n_tasks is not None):
         raise RunnerError("--all cannot be combined with --task or --n-tasks")
-    if not args.all_tasks and not args.task and args.n_tasks is None:
+    if (
+        not args.all_tasks
+        and not args.task
+        and args.n_tasks is None
+        and not has_ordered_range
+    ):
         raise RunnerError(
             "Refusing to run all 113 tasks implicitly. Choose --task NAME, "
-            "--n-tasks N, or explicitly pass --all."
+            "--n-tasks N, ordered task bounds, or explicitly pass --all."
         )
     if args.n_tasks is not None and args.n_tasks < 1:
         raise RunnerError("--n-tasks must be at least 1")
+    if has_ordered_range:
+        if ordered_start < 0:
+            raise RunnerError("--n-ordered-tasks-start cannot be negative")
+        if ordered_end < ordered_start:
+            raise RunnerError(
+                "--n-ordered-tasks-end must be greater than or equal to the start"
+            )
+        if ordered_end >= len(available):
+            raise RunnerError(
+                f"--n-ordered-tasks-end {ordered_end} is out of range; "
+                f"the last task index is {len(available) - 1}"
+            )
     missing = sorted(set(args.task) - set(available))
     if missing:
         raise RunnerError(f"Unknown task(s): {', '.join(missing)}")
+
+
+def resolve_ordered_selection(
+    args: argparse.Namespace,
+    available: Sequence[str],
+) -> None:
+    start = getattr(args, "n_ordered_tasks_start", None)
+    end = getattr(args, "n_ordered_tasks_end", None)
+    if start is None or end is None:
+        return
+    args.task = list(available[start : end + 1])
+    # The range was already selected from the runner's alphabetical list.
+    # Do not ask Pier to shuffle that explicit selection.
+    args.sample_seed = None
 
 
 def selected_count(args: argparse.Namespace, available: Sequence[str]) -> int:
@@ -509,6 +551,18 @@ def create_parser() -> argparse.ArgumentParser:
     selection = run_parser.add_argument_group("task selection")
     selection.add_argument("--task", action="append", default=[], metavar="TASK_ID")
     selection.add_argument("--n-tasks", type=int, metavar="N")
+    selection.add_argument(
+        "--n-ordered-tasks-start",
+        type=int,
+        metavar="INDEX",
+        help="Zero-based first task index in the alphabetical task list (inclusive)",
+    )
+    selection.add_argument(
+        "--n-ordered-tasks-end",
+        type=int,
+        metavar="INDEX",
+        help="Zero-based last task index in the alphabetical task list (inclusive)",
+    )
     selection.add_argument("--sample-seed", type=int, default=0)
     selection.add_argument(
         "--all",
@@ -570,6 +624,7 @@ def _run_command(args: argparse.Namespace) -> int:
     benchmark_dir = ensure_benchmark(args.benchmark_dir, update=args.update_benchmark)
     available = task_names(benchmark_dir)
     validate_selection(args, available)
+    resolve_ordered_selection(args, available)
     if not args.model:
         args.model = [DEFAULT_MODEL]
     if args.max_ai_credits is not None and args.max_ai_credits < 1:

@@ -17,6 +17,7 @@ from deepswe_runner.cli import (
     pier_result_succeeded,
     redact_command,
     report_ai_credits,
+    resolve_ordered_selection,
     selected_count,
     _run_command,
     validate_selection,
@@ -30,6 +31,8 @@ def args(**overrides):
         "model": ["gpt-5-mini"],
         "task": ["task-a"],
         "n_tasks": None,
+        "n_ordered_tasks_start": None,
+        "n_ordered_tasks_end": None,
         "sample_seed": 0,
         "all_tasks": False,
         "concurrency": 1,
@@ -71,6 +74,56 @@ def test_unknown_explicit_task_is_rejected():
 def test_subset_count_accounts_for_models_later():
     assert selected_count(args(task=[], n_tasks=3), [str(i) for i in range(10)]) == 3
     assert selected_count(args(task=["a", "b"], n_tasks=1), ["a", "b"]) == 1
+
+
+def test_ordered_task_range_is_zero_based_and_inclusive():
+    run_args = args(
+        task=[],
+        n_ordered_tasks_start=1,
+        n_ordered_tasks_end=3,
+    )
+    available = ["a", "b", "c", "d", "e"]
+
+    validate_selection(run_args, available)
+    resolve_ordered_selection(run_args, available)
+
+    assert run_args.task == ["b", "c", "d"]
+    assert run_args.sample_seed is None
+    assert selected_count(run_args, available) == 3
+
+
+@pytest.mark.parametrize(
+    ("start", "end", "message"),
+    [
+        (0, None, "must be used together"),
+        (None, 1, "must be used together"),
+        (-1, 1, "cannot be negative"),
+        (2, 1, "greater than or equal"),
+        (0, 5, "last task index is 4"),
+    ],
+)
+def test_invalid_ordered_task_bounds_are_rejected(start, end, message):
+    with pytest.raises(RunnerError, match=message):
+        validate_selection(
+            args(
+                task=[],
+                n_ordered_tasks_start=start,
+                n_ordered_tasks_end=end,
+            ),
+            ["a", "b", "c", "d", "e"],
+        )
+
+
+def test_ordered_task_range_cannot_be_combined_with_other_selectors():
+    with pytest.raises(RunnerError, match="cannot be combined"):
+        validate_selection(
+            args(
+                task=["a"],
+                n_ordered_tasks_start=0,
+                n_ordered_tasks_end=1,
+            ),
+            ["a", "b"],
+        )
 
 
 def test_direct_command_has_models_subset_and_credit_limit(monkeypatch, tmp_path):

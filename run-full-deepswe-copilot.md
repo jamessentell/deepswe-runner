@@ -16,6 +16,19 @@ No AI-credit cap is specified. To impose a per-task limit, add
 `--max-ai-credits 30` (the Copilot CLI minimum) to both the original and resumed
 commands. Resume commands must otherwise remain identical.
 
+## Split the alphabetical task list across machines
+
+The bounds are zero-based and inclusive. These two commands select adjacent,
+non-overlapping task ranges:
+
+```cmd
+.\run-deepswe.cmd run --agent copilot-cli --model gpt-5.3-codex --reasoning-effort xhigh --n-ordered-tasks-start 0 --n-ordered-tasks-end 5 --concurrency 1 --job-name gpt-5.3-codex-xhigh-tasks-0-through-5
+.\run-deepswe.cmd run --agent copilot-cli --model gpt-5.3-codex --reasoning-effort xhigh --n-ordered-tasks-start 6 --n-ordered-tasks-end 10 --concurrency 1 --job-name gpt-5.3-codex-xhigh-tasks-6-through-10
+```
+
+Use the same runner and benchmark commits on every machine. Rerun the exact
+same command and job name on a machine to resume its range.
+
 ## Standalone commands for individual tasks
 Run these commands from Command Prompt. Each command is a standalone `cmd`
 command.
